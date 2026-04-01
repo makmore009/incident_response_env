@@ -1,0 +1,24 @@
+# Don't copy local venv into Docker build
+.venv/
+venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Git
+.git/
+.gitignore
+
+# Tests (not needed in production image)
+tests/
+
+# IDE
+.vscode/
+.idea/
+
+# Docs (already built into the image isn't needed)
+*.md
+!README.md
