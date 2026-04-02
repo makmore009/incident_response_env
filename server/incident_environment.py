@@ -9,9 +9,11 @@ from fastmcp import FastMCP
 try:
     from openenv.core.env_server.mcp_environment import MCPEnvironment
     from openenv.core.env_server.types import Action, Observation, State
+    from openenv.core.env_server.mcp_types import CallToolAction, CallToolObservation
 except ImportError:
     from openenv.core.env_server.mcp_environment import MCPEnvironment
     from openenv.core.env_server.types import Action, Observation, State
+    from openenv.core.env_server.mcp_types import CallToolAction, CallToolObservation
 
 from .graders import (
     EpisodeHistory,
@@ -83,7 +85,6 @@ class IncidentEnvironment(MCPEnvironment):
         self._done: bool = False
         self._step_count: int = 0
         self._time_elapsed: float = 0.0
-        self._last_tool_result: str = ""
         self._prev_clue_count: int = 0
         self._prev_root_cause_state: bool = False
         self._prev_wrong_remedies: int = 0
@@ -100,7 +101,6 @@ class IncidentEnvironment(MCPEnvironment):
         self._done = False
         self._step_count = 0
         self._time_elapsed = 0.0
-        self._last_tool_result = ""
         self._prev_clue_count = 0
         self._prev_root_cause_state = False
         self._prev_wrong_remedies = 0
@@ -115,19 +115,7 @@ class IncidentEnvironment(MCPEnvironment):
         return Observation(
             done=False,
             reward=0.0,
-            metadata={
-                "alert_summary": self._scenario.alert_summary,
-                "severity": self._scenario.severity,
-                "task_description": self._scenario.task_description,
-                "available_services": list(self._scenario.services.keys()),
-                "available_actions": self.VALID_ACTIONS,
-                "current_findings": [],
-                "step_number": 0,
-                "max_steps": self._scenario.max_steps,
-                "time_elapsed_minutes": 0.0,
-                "task_name": self._scenario.task_name,
-                "task_difficulty": self._scenario.task_difficulty,
-            },
+            metadata={},
         )
 
     # -- Tool handlers --
@@ -165,17 +153,9 @@ class IncidentEnvironment(MCPEnvironment):
                 self._history.relevant_clues_found + 1,
                 self._scenario.total_clues,
             )
-            clue_msg = (
-                f"\n[Investigation Note: This service's logs contain relevant information]"
-                if service_info.name in self._scenario.relevant_services
-                else ""
-            )
-        else:
-            clue_msg = ""
 
-        result = f"=== Logs for {service_info.name} ===\n" + "\n".join(logs) + clue_msg
+        result = f"=== Logs for {service_info.name} ===\n" + "\n".join(logs)
         self._findings.append(f"Queried logs for {service_info.name}")
-        self._last_tool_result = result
         return result
 
     def _handle_check_metrics(self, service: str) -> str:
@@ -205,7 +185,6 @@ class IncidentEnvironment(MCPEnvironment):
 
         result = f"=== Metrics for {service_info.name} ===\n{json.dumps(service_info.metrics, indent=2)}"
         self._findings.append(f"Checked metrics for {service_info.name}")
-        self._last_tool_result = result
         return result
 
     def _handle_read_runbook(self, service: str) -> str:
@@ -237,7 +216,6 @@ class IncidentEnvironment(MCPEnvironment):
             return f"No runbook entry found for {service_info.name}"
 
         self._findings.append(f"Read runbook for {service_info.name}")
-        self._last_tool_result = service_info.runbook_entry
         return service_info.runbook_entry
 
     def _handle_identify_root_cause(self, cause: str) -> str:
@@ -250,13 +228,11 @@ class IncidentEnvironment(MCPEnvironment):
         self._history.root_cause_partial = partial
 
         if exact:
-            result = "✅ Root cause correctly identified! Now apply the appropriate remedy."
+            return "✅ Root cause correctly identified! Now apply the appropriate remedy."
         elif partial:
-            result = "⚠️ You're on the right track, but not complete. Gather more evidence."
+            return "⚠️ You're on the right track, but not complete. Gather more evidence."
         else:
-            result = "❌ Incorrect root cause. Continue investigating logs, metrics, and runbooks."
-        self._last_tool_result = result
-        return result
+            return "❌ Incorrect root cause. Continue investigating logs, metrics, and runbooks."
 
     def _handle_execute_remedy(self, service: str, remedy: str) -> str:
         if not self._scenario:
@@ -267,20 +243,16 @@ class IncidentEnvironment(MCPEnvironment):
 
         if remedy.lower().strip() in self.DESTRUCTIVE_ACTIONS:
             self._history.destructive_actions += 1
-            result = f"⛔ DESTRUCTIVE ACTION BLOCKED: '{remedy}' on {service}. Penalty applied."
-            self._last_tool_result = result
-            return result
+            return f"⛔ DESTRUCTIVE ACTION BLOCKED: '{remedy}' on {service}. Penalty applied."
 
         is_correct = check_remedy([attempt], self._scenario)
         if is_correct:
             self._history.remedy_correct = True
             self._done = True
-            result = f"✅ Remedy '{remedy}' applied to {service}. Incident resolved!"
+            return f"✅ Remedy '{remedy}' applied to {service}. Incident resolved!"
         else:
             self._history.wrong_remedies += 1
-            result = f"❌ Remedy '{remedy}' on {service} failed. Check the runbook for the correct procedure."
-        self._last_tool_result = result
-        return result
+            return f"❌ Remedy '{remedy}' on {service} failed. Check the runbook for the correct procedure."
 
     def _handle_escalate(self, reason: str) -> str:
         if not self._scenario:
@@ -288,9 +260,7 @@ class IncidentEnvironment(MCPEnvironment):
 
         self._history.unnecessary_escalations += 1
         self._done = True
-        result = f"📞 Escalated to senior on-call. Reason: {reason}. Resolving without escalation earns higher scores."
-        self._last_tool_result = result
-        return result
+        return f"📞 Escalated to senior on-call. Reason: {reason}. Resolving without escalation earns higher scores."
 
     def _handle_get_status(self) -> str:
         if not self._scenario:
@@ -309,14 +279,12 @@ class IncidentEnvironment(MCPEnvironment):
             "incident_resolved": self._history.remedy_correct,
             "available_services": list(self._scenario.services.keys()),
         }
-        result = json.dumps(status, indent=2)
-        self._last_tool_result = result
-        return result
+        return json.dumps(status, indent=2)
 
     # -- Incremental reward --
 
     def _compute_step_reward(self) -> float:
-        """Per-step reward: clue +0.02, root cause +0.05, wrong remedy -0.03, destructive -0.05, escalation -0.02."""
+        """Per-step shaping reward."""
         if not self._history:
             return 0.0
 
@@ -348,7 +316,7 @@ class IncidentEnvironment(MCPEnvironment):
 
         return round(reward, 4)
 
-    # -- Step / State --
+    # -- Step: let base class handle MCP, then enrich with reward/done --
 
     def _step_impl(self, action: Action, timeout_s: Optional[float] = None, **kwargs: Any) -> Observation:
         return Observation(
@@ -356,7 +324,8 @@ class IncidentEnvironment(MCPEnvironment):
             metadata={"error": f"Unknown action type: {type(action).__name__}. Use MCP tools."},
         )
 
-    def step(self, action: Action, timeout_s: Optional[float] = None, **kwargs: Any) -> Observation:
+    def _enrich_observation(self, obs: Any) -> Any:
+        """Add reward and done to observation returned by base MCPEnvironment."""
         self._step_count += 1
         self._state.step_count = self._step_count
         self._time_elapsed += 2.0
@@ -364,67 +333,29 @@ class IncidentEnvironment(MCPEnvironment):
         if self._history:
             self._history.steps_used = self._step_count
 
-        obs = super().step(action, timeout_s=timeout_s, **kwargs)
-
         if self._scenario and self._history:
             is_done = self._done or self._step_count >= self._scenario.max_steps
             reward = grade_episode(self._scenario, self._history) if is_done else self._compute_step_reward()
 
-            metadata = obs.metadata or {}
-            metadata.update({
-                "tool_result": self._last_tool_result,
-                "step_number": self._step_count,
-                "max_steps": self._scenario.max_steps,
-                "time_elapsed_minutes": self._time_elapsed,
-                "current_findings": self._findings[-10:],
-                "available_services": list(self._scenario.services.keys()),
-                "available_actions": self.VALID_ACTIONS,
-                "alert_summary": self._scenario.alert_summary,
-                "severity": self._scenario.severity,
-            })
-
-            if is_done:
-                metadata["grade_breakdown"] = get_grade_breakdown(self._scenario, self._history)
-                metadata["final_score"] = reward
-
-            return Observation(done=is_done, reward=reward, metadata=metadata)
+            # Mutate the observation's reward and done in-place
+            # CallToolObservation inherits from Observation which has these fields
+            try:
+                obs.reward = reward
+                obs.done = is_done
+            except (AttributeError, TypeError):
+                pass
 
         return obs
+
+    def step(self, action: Action, timeout_s: Optional[float] = None, **kwargs: Any) -> Observation:
+        # Let the base MCPEnvironment handle the tool call natively
+        # This returns CallToolObservation with tool_name + result (containing text)
+        obs = super().step(action, timeout_s=timeout_s, **kwargs)
+        return self._enrich_observation(obs)
 
     async def step_async(self, action: Action, timeout_s: Optional[float] = None, **kwargs: Any) -> Observation:
-        self._step_count += 1
-        self._state.step_count = self._step_count
-        self._time_elapsed += 2.0
-
-        if self._history:
-            self._history.steps_used = self._step_count
-
         obs = await super().step_async(action, timeout_s=timeout_s, **kwargs)
-
-        if self._scenario and self._history:
-            is_done = self._done or self._step_count >= self._scenario.max_steps
-            reward = grade_episode(self._scenario, self._history) if is_done else self._compute_step_reward()
-
-            metadata = obs.metadata or {}
-            metadata.update({
-                "tool_result": self._last_tool_result,
-                "step_number": self._step_count,
-                "max_steps": self._scenario.max_steps,
-                "time_elapsed_minutes": self._time_elapsed,
-                "current_findings": self._findings[-10:],
-                "available_services": list(self._scenario.services.keys()),
-                "available_actions": self.VALID_ACTIONS,
-                "alert_summary": self._scenario.alert_summary,
-                "severity": self._scenario.severity,
-            })
-
-            if is_done:
-                metadata["grade_breakdown"] = get_grade_breakdown(self._scenario, self._history)
-                metadata["final_score"] = reward
-
-            return Observation(done=is_done, reward=reward, metadata=metadata)
-
-        return obs
+        return self._enrich_observation(obs)
 
     @property
     def state(self) -> State:
