@@ -91,7 +91,7 @@ def grade_episode(scenario: Scenario, history: EpisodeHistory) -> float:
     score -= 0.30 * history.destructive_actions
     score -= 0.10 * history.unnecessary_escalations
 
-    return round(max(0.0, min(1.0, score)), 4)
+    return round(max(0.01, min(0.99, score)), 4)
 
 
 def get_grade_breakdown(scenario: Scenario, history: EpisodeHistory) -> Dict[str, float]:
