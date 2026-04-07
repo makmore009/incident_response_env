@@ -33,7 +33,7 @@ This is a **multi-step sequential decision problem** — perfect for training RL
 | `medium_cascading_db` | ⭐⭐ Medium | Cascading failure from a long-running database query exhausting connection pools | 15 |
 | `hard_intermittent_auth` | ⭐⭐⭐ Hard | Intermittent 401 errors caused by a race condition between JWT key rotation and token cache invalidation | 20 |
 
-## Action Space (MCP Tools)
+## Action Space
 
 The agent interacts via 7 tools:
 
@@ -101,6 +101,19 @@ docker build -t incident-env:latest -f server/Dockerfile .
 docker run -p 8000:8000 incident-env:latest
 ```
 
+## 🎮 Human Review & Interactive Testing
+
+This repository includes a fully featured **Interactive Dashboard** (built natively on top of the API without disrupting automated grading). The dashboard allows human engineers to assume the role of an on-call responder.
+
+**To test the UI:**
+1. Navigate to the Hugging Face Space URL. The UI will automatically load by default.
+2. Select an incident (e.g., `easy_config_error`) and click **"🔔 Acknowledge & Start Investigation"**.
+3. Use the **Action Control** panel to investigate.
+    - Example 1: Set Action to `query_logs`, target to `payment-service`, and params to `{"filter": "error"}`, then click **Execute Action**.
+    - Example 2: Notice your score dynamically updates! Read the logs in the console to find the error.
+    - Example 3: Set Action to `read_runbook` for `payment-service` (params empty) to find the solution.
+4. Conclude the simulation by executing the correct `execute_remedy` action. The Grader rigorously enforces penalties for dangerous actions and rewards efficiency!
+
 ### HuggingFace Space
 ```bash
 openenv push --repo-id makrand098/incident-env
@@ -119,7 +132,7 @@ openenv push --repo-id makrand098/incident-env
 ```
 incident_env/
 ├── models.py              # Action, Observation, State Pydantic models
-├── client.py              # MCPToolClient-based client
+├── client.py              # Standard OpenEnv HTTP Client
 ├── inference.py           # Baseline LLM agent
 ├── openenv.yaml           # Environment manifest
 ├── pyproject.toml         # Dependencies
