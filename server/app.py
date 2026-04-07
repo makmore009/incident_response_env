@@ -22,6 +22,24 @@ app = create_app(
 )
 
 
+@app.get("/")
+async def root():
+    """API information page."""
+    return {
+        "name": "Incident Response Environment",
+        "description": "On-call incident response RL environment for training AI agents",
+        "endpoints": {
+            "POST /reset": "Reset environment (accepts task_name parameter)",
+            "POST /step": "Execute an action (accepts IncidentAction)",
+            "GET /state": "Get current environment state",
+            "GET /schema": "Get action/observation JSON schemas",
+            "GET /tasks": "List available tasks",
+            "WS /ws": "WebSocket endpoint for persistent sessions",
+        },
+        "tasks": get_available_tasks(),
+    }
+
+
 @app.get("/tasks")
 async def tasks():
     """Return available task names for this environment."""
