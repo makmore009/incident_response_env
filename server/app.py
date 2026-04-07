@@ -22,7 +22,7 @@ app = create_app(
 )
 
 
-@app.get("/")
+@app.get("/api_info")
 async def root():
     """API information page."""
     return {
