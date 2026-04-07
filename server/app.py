@@ -63,5 +63,13 @@ def main():
     uvicorn.run(app, host="0.0.0.0", port=port)
 
 
+import gradio as gr
+try:
+    from .ui import demo
+except ImportError:
+    from server.ui import demo
+
+app = gr.mount_gradio_app(app, demo, path="/")
+
 if __name__ == "__main__":
     main()
