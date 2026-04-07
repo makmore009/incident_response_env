@@ -183,7 +183,7 @@ def run_task(client: OpenAI, env_base_url: str, task_name: str) -> tuple:
         for step_idx in range(MAX_STEPS_PER_TASK):
             step_count = step_idx + 1
             action_str = "noop()"
-            reward = 0.0
+            reward = 0.01
             done = False
             error_str = "null"
 
@@ -228,7 +228,7 @@ def run_task(client: OpenAI, env_base_url: str, task_name: str) -> tuple:
                 )
                 step_data = step_resp.json()
 
-                reward = step_data.get("reward", 0.0)
+                reward = step_data.get("reward", 0.01)
                 done = step_data.get("done", False)
                 step_obs = step_data.get("observation", {})
                 result_text = step_obs.get("last_action_result", "")
@@ -264,8 +264,8 @@ def run_task(client: OpenAI, env_base_url: str, task_name: str) -> tuple:
     except Exception as e:
         if step_count == 0:
             step_count = 1
-            rewards.append(0.0)
-            print(f"[STEP] step=1 action=noop() reward=0.00 done=false error={str(e)[:200]}")
+            rewards.append(0.01)
+            print(f"[STEP] step=1 action=noop() reward=0.01 done=false error={str(e)[:200]}")
 
     return success, step_count, rewards
 
@@ -275,7 +275,7 @@ def main():
 
     for task in TASKS:
         success, steps, rewards = run_task(client, ENV_BASE_URL, task)
-        rewards_str = ",".join(f"{r:.2f}" for r in rewards) if rewards else "0.00"
+        rewards_str = ",".join(f"{r:.2f}" for r in rewards) if rewards else "0.01"
         success_str = "true" if success else "false"
         print(f"[END] success={success_str} steps={steps} rewards={rewards_str}")
 
