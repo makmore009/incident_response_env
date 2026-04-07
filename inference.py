@@ -1,4 +1,8 @@
-"""Baseline inference script for the Incident Response Environment."""
+"""Baseline inference script for the Incident Response Environment.
+
+Follows the strict [START]/[STEP]/[END] logging format required by the
+hackathon evaluation pipeline.
+"""
 
 import json
 import os
@@ -9,7 +13,8 @@ from typing import Dict, List, Optional
 
 from openai import OpenAI
 
-# Configuration
+# ── Configuration ──────────────────────────────────────────────────────────
+
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "meta-llama/Llama-3.3-70B-Instruct")
 HF_TOKEN = os.getenv("HF_TOKEN")
@@ -49,16 +54,20 @@ def get_system_prompt(task_name: str) -> str:
         You are an expert on-call engineer responding to a production incident.
 
         AVAILABLE SERVICES: {services_str}
-        IMPORTANT: You MUST use ONLY these exact service names when calling tools.
+        IMPORTANT: You MUST use ONLY these exact service names.
 
-        AVAILABLE TOOLS (call exactly one per turn as JSON):
-        1. query_logs(service, filter) — Check logs. Example: {{"tool":"query_logs","args":{{"service":"{ctx['services'][0]}","filter":"error"}}}}
-        2. check_metrics(service) — Check metrics.
-        3. read_runbook(service) — Read operational runbook with known fixes.
-        4. identify_root_cause(cause) — Declare the root cause after gathering evidence.
-        5. execute_remedy(service, remedy) — Apply a fix. Use the exact remedy name from the runbook.
-        6. escalate(reason) — Escalate to senior on-call (LAST RESORT, reduces score).
-        7. get_status() — Check investigation progress.
+        RESPOND WITH EXACTLY ONE JSON OBJECT per turn choosing an action:
+
+        Available action_types:
+        1. query_logs — Check logs. target=service name, parameters={{"filter": "error"}}
+        2. check_metrics — Check metrics. target=service name
+        3. read_runbook — Read operational runbook. target=service name
+        4. identify_root_cause — Declare root cause. parameters={{"cause": "description"}}
+        5. execute_remedy — Apply fix. parameters={{"service": "name", "remedy": "fix_name"}}
+        6. escalate — Escalate (LAST RESORT). parameters={{"reason": "why"}}
+        7. get_status — Check investigation progress.
+
+        FORMAT: {{"action_type": "...", "target": "...", "parameters": {{...}}}}
 
         STRATEGY:
         - {ctx['hint']}
@@ -68,23 +77,23 @@ def get_system_prompt(task_name: str) -> str:
         - Use the EXACT remedy name from the runbook
 
         RESPOND WITH EXACTLY ONE JSON OBJECT PER TURN. Nothing else.
-        Format: {{"tool": "tool_name", "args": {{"param": "value"}}}}
     """)
 
 
-def parse_tool_call(response_text: str) -> Optional[Dict]:
-    """Extract a JSON tool call from LLM output."""
-    json_pattern = re.compile(r'\{[^{}]*"tool"[^{}]*\}', re.DOTALL)
+def parse_action(response_text: str) -> Optional[Dict]:
+    """Extract a JSON action from LLM output."""
+    json_pattern = re.compile(r'\{[^{}]*"action_type"[^{}]*\}', re.DOTALL)
     matches = json_pattern.findall(response_text)
 
     for match in matches:
         try:
             parsed = json.loads(match)
-            if "tool" in parsed:
+            if "action_type" in parsed:
                 return parsed
         except json.JSONDecodeError:
             continue
 
+    # Fallback: try nested JSON
     try:
         brace_count = 0
         start = response_text.find('{')
@@ -96,72 +105,48 @@ def parse_tool_call(response_text: str) -> Optional[Dict]:
                     brace_count -= 1
                     if brace_count == 0:
                         parsed = json.loads(response_text[start:i+1])
-                        if "tool" in parsed:
+                        if "action_type" in parsed:
                             return parsed
                         break
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # Backwards compat: try old {"tool": ..., "args": ...} format
+    try:
+        tool_pattern = re.compile(r'\{[^{}]*"tool"[^{}]*\}', re.DOTALL)
+        tool_matches = tool_pattern.findall(response_text)
+        for match in tool_matches:
+            parsed = json.loads(match)
+            if "tool" in parsed:
+                return {
+                    "action_type": parsed["tool"],
+                    "target": parsed.get("args", {}).get("service", ""),
+                    "parameters": parsed.get("args", {}),
+                }
     except (json.JSONDecodeError, ValueError):
         pass
 
     return None
 
 
-def extract_tool_result(result) -> str:
-    """Extract text content from an environment observation."""
-    if result is None:
-        return "No output"
-    if isinstance(result, str):
-        return result
+def format_action_str(action: Dict) -> str:
+    action_type = action.get("action_type", "noop")
+    target = action.get("target", "")
+    params = action.get("parameters", {})
 
-    if isinstance(result, dict):
-        if 'content' in result:
-            content = result['content']
-            if isinstance(content, list):
-                texts = []
-                for item in content:
-                    if isinstance(item, dict) and 'text' in item:
-                        texts.append(item['text'])
-                    elif hasattr(item, 'text'):
-                        texts.append(item.text)
-                    else:
-                        texts.append(str(item))
-                return "\n".join(texts) if texts else json.dumps(result)
-            return str(content)
-        if 'metadata' in result:
-            meta = result['metadata']
-            if isinstance(meta, dict) and 'tool_result' in meta:
-                return meta['tool_result']
-            return json.dumps(meta, indent=2)
-        return json.dumps(result, indent=2)
-
-    try:
-        if hasattr(result, 'metadata') and result.metadata:
-            meta = result.metadata
-            if isinstance(meta, dict) and 'tool_result' in meta:
-                return meta['tool_result']
-            return json.dumps(meta, indent=2)
-    except Exception:
-        pass
-
-    try:
-        if hasattr(result, 'content'):
-            contents = result.content
-            if isinstance(contents, list):
-                texts = [item.text if hasattr(item, 'text') else str(item) for item in contents]
-                if texts:
-                    return "\n".join(texts)
-    except Exception:
-        pass
-
-    return str(result)
+    parts = []
+    if target:
+        parts.append(f"'{target}'")
+    for k, v in params.items():
+        if k != "service" or not target:
+            parts.append(f"{k}='{v}'" if isinstance(v, str) else f"{k}={v}")
+    return f"{action_type}({','.join(parts)})"
 
 
-def format_action_str(tool_name: str, tool_args: Dict) -> str:
-    args_parts = [f"'{v}'" if isinstance(v, str) else str(v) for v in tool_args.values()]
-    return f"{tool_name}({','.join(args_parts)})"
+def run_task(client: OpenAI, env_base_url: str, task_name: str) -> tuple:
+    """Run a single task via HTTP. Returns (success, steps, rewards_list)."""
+    import httpx
 
-
-def run_task(client: OpenAI, env, task_name: str) -> tuple:
-    """Run a single task. Returns (success, steps, rewards_list)."""
     rewards: List[float] = []
     step_count = 0
     success = False
@@ -169,20 +154,28 @@ def run_task(client: OpenAI, env, task_name: str) -> tuple:
     print(f"[START] task={task_name} env={ENV_NAME} model={MODEL_NAME}")
 
     try:
-        env.reset(task_name=task_name)
-        env.list_tools()
+        # Reset environment
+        reset_resp = httpx.post(
+            f"{env_base_url}/reset",
+            json={"task_name": task_name},
+            timeout=30.0,
+        )
+        reset_data = reset_resp.json()
+        obs = reset_data.get("observation", {})
+        alert = obs.get("alert_summary", "Incident alert fired")
+        services = obs.get("available_services", [])
 
         system_prompt = get_system_prompt(task_name)
-        ctx = TASK_CONTEXT.get(task_name, {"services": [], "hint": ""})
-        services_str = ", ".join(ctx["services"])
+        services_str = ", ".join(services) if services else ", ".join(TASK_CONTEXT.get(task_name, {}).get("services", []))
 
         messages = [
             {"role": "system", "content": system_prompt},
             {
                 "role": "user",
                 "content": (
-                    f"An incident alert has fired. Available services: {services_str}. "
-                    f"Begin investigating. What is your first tool call?"
+                    f"ALERT: {alert}\n"
+                    f"Available services: {services_str}\n"
+                    f"Begin investigating. What is your first action?"
                 ),
             },
         ]
@@ -203,68 +196,76 @@ def run_task(client: OpenAI, env, task_name: str) -> tuple:
                 )
                 llm_output = response.choices[0].message.content or ""
 
-                tool_call = parse_tool_call(llm_output)
-                if not tool_call:
+                action = parse_action(llm_output)
+                if not action:
                     action_str = "parse_error()"
-                    error_str = "Could not parse tool call from LLM output"
+                    error_str = "Could not parse action from LLM output"
                     messages.append({"role": "assistant", "content": llm_output})
                     messages.append({
                         "role": "user",
                         "content": (
                             'Respond with ONLY a JSON object. Example: '
-                            f'{{"tool": "query_logs", "args": {{"service": "{ctx["services"][0]}", "filter": "error"}}}}'
+                            f'{{"action_type": "query_logs", "target": "{services[0] if services else "payment-service"}", "parameters": {{"filter": "error"}}}}'
                         ),
                     })
                     rewards.append(reward)
-                    print(f"[STEP]  step={step_count} action={action_str} reward={reward:.2f} done=false error={error_str}")
+                    print(f"[STEP] step={step_count} action={action_str} reward={reward:.2f} done=false error={error_str}")
                     continue
 
-                tool_name = tool_call.get("tool", "noop")
-                tool_args = tool_call.get("args", {})
-                action_str = format_action_str(tool_name, tool_args)
+                action_str = format_action_str(action)
 
-                raw_result = env.call_tool(tool_name, **tool_args)
-                result_str = extract_tool_result(raw_result)
+                # Send action to environment via HTTP
+                step_resp = httpx.post(
+                    f"{env_base_url}/step",
+                    json={
+                        "action": {
+                            "action_type": action.get("action_type", "noop"),
+                            "target": action.get("target", ""),
+                            "parameters": action.get("parameters", {}),
+                        }
+                    },
+                    timeout=30.0,
+                )
+                step_data = step_resp.json()
 
-                if hasattr(raw_result, 'reward'):
-                    reward = raw_result.reward or 0.0
-                elif isinstance(raw_result, dict) and 'reward' in raw_result:
-                    reward = raw_result['reward'] or 0.0
+                reward = step_data.get("reward", 0.0)
+                done = step_data.get("done", False)
+                step_obs = step_data.get("observation", {})
+                result_text = step_obs.get("last_action_result", "")
+                is_error = step_obs.get("last_action_error", False)
 
-                error_str = "null"
+                if is_error:
+                    error_str = result_text[:200]
+                else:
+                    error_str = "null"
 
-                if "✅" in result_str and "resolved" in result_str.lower():
-                    done = True
+                if "✅" in result_text and "resolved" in result_text.lower():
                     success = True
-                elif "📞" in result_str and "escalated" in result_str.lower():
-                    done = True
-                elif "⛔" in result_str or "DESTRUCTIVE" in result_str:
-                    error_str = "destructive action blocked"
-                elif "❌" in result_str and "remedy" in result_str.lower():
-                    error_str = "incorrect remedy"
+                elif "📞" in result_text and "escalated" in result_text.lower():
+                    pass  # done=True from env
 
             except Exception as e:
                 error_str = str(e).replace("\n", " ")[:200]
 
             rewards.append(reward)
             done_str = "true" if done else "false"
-            print(f"[STEP]  step={step_count} action={action_str} reward={reward:.2f} done={done_str} error={error_str}")
+            print(f"[STEP] step={step_count} action={action_str} reward={reward:.2f} done={done_str} error={error_str}")
 
             if done:
                 break
 
             messages.append({"role": "assistant", "content": llm_output})
-            truncated = result_str[:1500] if len(result_str) > 1500 else result_str
+            truncated = result_text[:1500] if len(result_text) > 1500 else result_text
             messages.append({
                 "role": "user",
-                "content": f"Tool result:\n{truncated}\n\nWhat is your next tool call? Respond with JSON only.",
+                "content": f"Action result:\n{truncated}\n\nWhat is your next action? Respond with JSON only.",
             })
 
     except Exception as e:
         if step_count == 0:
             step_count = 1
             rewards.append(0.0)
-            print(f"[STEP]  step=1 action=noop() reward=0.00 done=false error={str(e)[:200]}")
+            print(f"[STEP] step=1 action=noop() reward=0.00 done=false error={str(e)[:200]}")
 
     return success, step_count, rewards
 
@@ -272,15 +273,11 @@ def run_task(client: OpenAI, env, task_name: str) -> tuple:
 def main():
     client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
 
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from client import IncidentEnv
-
-    with IncidentEnv(base_url=ENV_BASE_URL).sync() as env:
-        for task in TASKS:
-            success, steps, rewards = run_task(client, env, task)
-            rewards_str = ",".join(f"{r:.2f}" for r in rewards) if rewards else "0.00"
-            success_str = "true" if success else "false"
-            print(f"[END]   success={success_str} steps={steps} rewards={rewards_str}")
+    for task in TASKS:
+        success, steps, rewards = run_task(client, ENV_BASE_URL, task)
+        rewards_str = ",".join(f"{r:.2f}" for r in rewards) if rewards else "0.00"
+        success_str = "true" if success else "false"
+        print(f"[END] success={success_str} steps={steps} rewards={rewards_str}")
 
 
 if __name__ == "__main__":

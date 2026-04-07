@@ -6,17 +6,21 @@ The agent receives alerts, investigates logs/metrics/runbooks, identifies
 root causes, and applies remediation actions.
 
 Example:
-    >>> from incident_env import IncidentEnv
+    >>> from incident_env import IncidentEnv, IncidentAction
     >>>
     >>> with IncidentEnv(base_url="http://localhost:8000") as env:
-    ...     env.reset(task_name="easy_config_error")
-    ...     tools = env.list_tools()
-    ...     result = env.call_tool("query_logs", service="payment-service")
-    ...     print(result)
+    ...     result = env.reset(task_name="easy_config_error")
+    ...     print(result.observation.alert_summary)
+    ...
+    ...     result = env.step(IncidentAction(
+    ...         action_type="query_logs",
+    ...         target="payment-service",
+    ...         parameters={"filter": "error"}
+    ...     ))
+    ...     print(result.observation.last_action_result)
 """
 
-from openenv.core.env_server.mcp_types import CallToolAction, ListToolsAction
-
 from .client import IncidentEnv
+from .models import IncidentAction, IncidentObservation, IncidentState
 
-__all__ = ["IncidentEnv", "CallToolAction", "ListToolsAction"]
+__all__ = ["IncidentEnv", "IncidentAction", "IncidentObservation", "IncidentState"]

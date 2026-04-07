@@ -1,32 +1,34 @@
-"""Incident Response MCP Environment."""
+"""Incident Response Environment — Environment base class implementation."""
 
 import json
 from typing import Any, Optional
 from uuid import uuid4
 
-from fastmcp import FastMCP
+from openenv.core.env_server.interfaces import Environment
+from openenv.core.env_server.types import State
 
 try:
-    from openenv.core.env_server.mcp_environment import MCPEnvironment
-    from openenv.core.env_server.types import Action, Observation, State
-    from openenv.core.env_server.mcp_types import CallToolAction, CallToolObservation
+    from ..models import IncidentAction, IncidentObservation, IncidentState
 except ImportError:
-    from openenv.core.env_server.mcp_environment import MCPEnvironment
-    from openenv.core.env_server.types import Action, Observation, State
-    from openenv.core.env_server.mcp_types import CallToolAction, CallToolObservation
+    from models import IncidentAction, IncidentObservation, IncidentState
 
 from .graders import (
     EpisodeHistory,
     check_remedy,
     check_root_cause,
     grade_episode,
-    get_grade_breakdown,
 )
-from .scenarios import Scenario, get_scenario, list_tasks
+from .scenarios import Scenario, get_scenario
 
 
-class IncidentEnvironment(MCPEnvironment):
-    """On-call incident response environment with 3 difficulty levels."""
+class IncidentEnvironment(Environment):
+    """On-call incident response environment with 3 difficulty levels.
+
+    The agent investigates production incidents using logs, metrics, and
+    runbooks, then identifies the root cause and applies a remedy.
+    """
+
+    SUPPORTS_CONCURRENT_SESSIONS: bool = True
 
     VALID_ACTIONS = [
         "query_logs", "check_metrics", "read_runbook",
@@ -40,45 +42,6 @@ class IncidentEnvironment(MCPEnvironment):
     }
 
     def __init__(self):
-        mcp = FastMCP("incident_env")
-        env = self
-
-        @mcp.tool
-        def query_logs(service: str, filter: str = "") -> str:
-            """Query logs for a service. Use filter to search for specific terms."""
-            return env._handle_query_logs(service, filter)
-
-        @mcp.tool
-        def check_metrics(service: str) -> str:
-            """Check current metrics (CPU, memory, error rate, latency) for a service."""
-            return env._handle_check_metrics(service)
-
-        @mcp.tool
-        def read_runbook(service: str) -> str:
-            """Read the operational runbook with troubleshooting procedures."""
-            return env._handle_read_runbook(service)
-
-        @mcp.tool
-        def identify_root_cause(cause: str) -> str:
-            """Declare the root cause of the incident."""
-            return env._handle_identify_root_cause(cause)
-
-        @mcp.tool
-        def execute_remedy(service: str, remedy: str) -> str:
-            """Execute a remediation action on a service."""
-            return env._handle_execute_remedy(service, remedy)
-
-        @mcp.tool
-        def escalate(reason: str) -> str:
-            """Escalate the incident to senior on-call (reduces score)."""
-            return env._handle_escalate(reason)
-
-        @mcp.tool
-        def get_status() -> str:
-            """Get current investigation status summary."""
-            return env._handle_get_status()
-
-        super().__init__(mcp)
         self._scenario: Optional[Scenario] = None
         self._history: Optional[EpisodeHistory] = None
         self._findings: list = []
@@ -90,9 +53,9 @@ class IncidentEnvironment(MCPEnvironment):
         self._prev_wrong_remedies: int = 0
         self._prev_destructive: int = 0
         self._prev_escalations: int = 0
-        self._state = State(episode_id=str(uuid4()), step_count=0)
+        self._state = IncidentState(episode_id=str(uuid4()), step_count=0)
 
-    def reset(self, seed: Optional[int] = None, episode_id: Optional[str] = None, **kwargs: Any) -> Observation:
+    def reset(self, seed: Optional[int] = None, **kwargs: Any) -> IncidentObservation:
         task_name = kwargs.get("task_name", "easy_config_error")
 
         self._scenario = get_scenario(task_name, seed=seed or 42)
@@ -107,23 +70,113 @@ class IncidentEnvironment(MCPEnvironment):
         self._prev_destructive = 0
         self._prev_escalations = 0
 
-        self._state = State(
-            episode_id=episode_id or str(uuid4()),
+        self._state = IncidentState(
+            episode_id=str(uuid4()),
             step_count=0,
+            task_name=task_name,
+            task_difficulty=self._scenario.task_difficulty,
+            severity=self._scenario.severity,
         )
 
-        return Observation(
+        return IncidentObservation(
+            alert_summary=self._scenario.alert_summary,
+            severity=self._scenario.severity,
+            task_description=self._scenario.task_description,
+            current_findings=[],
+            available_services=list(self._scenario.services.keys()),
+            available_actions=self.VALID_ACTIONS,
+            last_action_result="Environment ready. Begin investigation.",
+            last_action_error=False,
+            time_elapsed_minutes=0.0,
+            step_number=0,
+            max_steps=self._scenario.max_steps,
             done=False,
             reward=0.0,
-            metadata={},
         )
+
+    def step(self, action: IncidentAction) -> IncidentObservation:  # type: ignore[override]
+        if not self._scenario or not self._history:
+            return IncidentObservation(
+                last_action_result="Error: call reset() before step().",
+                last_action_error=True,
+                done=False,
+                reward=0.0,
+            )
+
+        self._step_count += 1
+        self._state.step_count = self._step_count
+        self._time_elapsed += 2.0
+
+        action_type = action.action_type.lower().strip()
+        result_text, is_error = self._dispatch_action(action_type, action)
+
+        self._history.steps_used = self._step_count
+        is_done = self._done or self._step_count >= self._scenario.max_steps
+
+        if is_done:
+            reward = grade_episode(self._scenario, self._history)
+        else:
+            reward = self._compute_step_reward()
+
+        self._state.root_cause_identified = self._history.root_cause_correct
+        self._state.incident_resolved = self._history.remedy_correct
+        self._state.cum_reward = (self._state.cum_reward or 0.0) + reward
+        self._state.relevant_clues_found = self._history.relevant_clues_found
+        self._state.total_clues_available = self._scenario.total_clues
+        self._state.steps_used = self._step_count
+        self._state.wrong_actions_taken = self._history.wrong_remedies + self._history.destructive_actions
+
+        return IncidentObservation(
+            alert_summary=self._scenario.alert_summary,
+            severity=self._scenario.severity,
+            task_description=self._scenario.task_description,
+            current_findings=list(self._findings),
+            available_services=list(self._scenario.services.keys()),
+            available_actions=self.VALID_ACTIONS,
+            last_action_result=result_text,
+            last_action_error=is_error,
+            time_elapsed_minutes=self._time_elapsed,
+            step_number=self._step_count,
+            max_steps=self._scenario.max_steps,
+            done=is_done,
+            reward=reward,
+        )
+
+    @property
+    def state(self) -> IncidentState:
+        return self._state
+
+    # -- Action dispatch --
+
+    def _dispatch_action(self, action_type: str, action: IncidentAction) -> tuple:
+        """Route action to handler. Returns (result_text, is_error)."""
+        target = action.target or ""
+        params = action.parameters or {}
+
+        if action_type == "query_logs":
+            return self._handle_query_logs(target, params.get("filter", "")), False
+        elif action_type == "check_metrics":
+            return self._handle_check_metrics(target), False
+        elif action_type == "read_runbook":
+            return self._handle_read_runbook(target), False
+        elif action_type == "identify_root_cause":
+            cause = params.get("cause", target)
+            return self._handle_identify_root_cause(cause), False
+        elif action_type == "execute_remedy":
+            remedy = params.get("remedy", "")
+            service = params.get("service", target)
+            return self._handle_execute_remedy(service, remedy), False
+        elif action_type == "escalate":
+            reason = params.get("reason", target)
+            return self._handle_escalate(reason), False
+        elif action_type == "get_status":
+            return self._handle_get_status(), False
+        else:
+            return f"Unknown action '{action_type}'. Valid: {', '.join(self.VALID_ACTIONS)}", True
 
     # -- Tool handlers --
 
     def _handle_query_logs(self, service: str, filter_text: str = "") -> str:
-        if not self._scenario:
-            return "Error: Environment not initialized. Call reset() first."
-
         service_lower = service.lower().strip()
         service_info = self._scenario.services.get(service_lower)
 
@@ -148,7 +201,7 @@ class IncidentEnvironment(MCPEnvironment):
                 f" matching filter '{filter_text}'" if filter_text else ""
             )
 
-        if service_info.is_relevant and service_info.name not in self._history.services_queried_logs - {service_info.name}:
+        if service_info.is_relevant:
             self._history.relevant_clues_found = min(
                 self._history.relevant_clues_found + 1,
                 self._scenario.total_clues,
@@ -159,9 +212,6 @@ class IncidentEnvironment(MCPEnvironment):
         return result
 
     def _handle_check_metrics(self, service: str) -> str:
-        if not self._scenario:
-            return "Error: Environment not initialized. Call reset() first."
-
         service_lower = service.lower().strip()
         service_info = self._scenario.services.get(service_lower)
 
@@ -188,9 +238,6 @@ class IncidentEnvironment(MCPEnvironment):
         return result
 
     def _handle_read_runbook(self, service: str) -> str:
-        if not self._scenario:
-            return "Error: Environment not initialized. Call reset() first."
-
         service_lower = service.lower().strip()
         service_info = self._scenario.services.get(service_lower)
 
@@ -219,9 +266,6 @@ class IncidentEnvironment(MCPEnvironment):
         return service_info.runbook_entry
 
     def _handle_identify_root_cause(self, cause: str) -> str:
-        if not self._scenario:
-            return "Error: Environment not initialized. Call reset() first."
-
         self._history.root_cause_declared = cause
         exact, partial = check_root_cause(cause, self._scenario)
         self._history.root_cause_correct = exact
@@ -235,9 +279,6 @@ class IncidentEnvironment(MCPEnvironment):
             return "❌ Incorrect root cause. Continue investigating logs, metrics, and runbooks."
 
     def _handle_execute_remedy(self, service: str, remedy: str) -> str:
-        if not self._scenario:
-            return "Error: Environment not initialized. Call reset() first."
-
         attempt = {"service": service.lower().strip(), "remedy": remedy.lower().strip()}
         self._history.remedies_attempted.append(attempt)
 
@@ -255,17 +296,11 @@ class IncidentEnvironment(MCPEnvironment):
             return f"❌ Remedy '{remedy}' on {service} failed. Check the runbook for the correct procedure."
 
     def _handle_escalate(self, reason: str) -> str:
-        if not self._scenario:
-            return "Error: Environment not initialized. Call reset() first."
-
         self._history.unnecessary_escalations += 1
         self._done = True
         return f"📞 Escalated to senior on-call. Reason: {reason}. Resolving without escalation earns higher scores."
 
     def _handle_get_status(self) -> str:
-        if not self._scenario:
-            return "Error: Environment not initialized. Call reset() first."
-
         status = {
             "alert": self._scenario.alert_summary,
             "severity": self._scenario.severity,
@@ -284,7 +319,6 @@ class IncidentEnvironment(MCPEnvironment):
     # -- Incremental reward --
 
     def _compute_step_reward(self) -> float:
-        """Per-step shaping reward."""
         if not self._history:
             return 0.0
 
@@ -315,48 +349,3 @@ class IncidentEnvironment(MCPEnvironment):
             self._prev_escalations = self._history.unnecessary_escalations
 
         return round(reward, 4)
-
-    # -- Step: let base class handle MCP, then enrich with reward/done --
-
-    def _step_impl(self, action: Action, timeout_s: Optional[float] = None, **kwargs: Any) -> Observation:
-        return Observation(
-            done=False, reward=0.0,
-            metadata={"error": f"Unknown action type: {type(action).__name__}. Use MCP tools."},
-        )
-
-    def _enrich_observation(self, obs: Any) -> Any:
-        """Add reward and done to observation returned by base MCPEnvironment."""
-        self._step_count += 1
-        self._state.step_count = self._step_count
-        self._time_elapsed += 2.0
-
-        if self._history:
-            self._history.steps_used = self._step_count
-
-        if self._scenario and self._history:
-            is_done = self._done or self._step_count >= self._scenario.max_steps
-            reward = grade_episode(self._scenario, self._history) if is_done else self._compute_step_reward()
-
-            # Mutate the observation's reward and done in-place
-            # CallToolObservation inherits from Observation which has these fields
-            try:
-                obs.reward = reward
-                obs.done = is_done
-            except (AttributeError, TypeError):
-                pass
-
-        return obs
-
-    def step(self, action: Action, timeout_s: Optional[float] = None, **kwargs: Any) -> Observation:
-        # Let the base MCPEnvironment handle the tool call natively
-        # This returns CallToolObservation with tool_name + result (containing text)
-        obs = super().step(action, timeout_s=timeout_s, **kwargs)
-        return self._enrich_observation(obs)
-
-    async def step_async(self, action: Action, timeout_s: Optional[float] = None, **kwargs: Any) -> Observation:
-        obs = await super().step_async(action, timeout_s=timeout_s, **kwargs)
-        return self._enrich_observation(obs)
-
-    @property
-    def state(self) -> State:
-        return self._state
