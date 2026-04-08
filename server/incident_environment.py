@@ -53,6 +53,7 @@ class IncidentEnvironment(Environment):
         self._prev_wrong_remedies: int = 0
         self._prev_destructive: int = 0
         self._prev_escalations: int = 0
+        self._trajectory_reward_sum: float = 0.0
         self._state = IncidentState(episode_id=str(uuid4()), step_count=0)
 
     def reset(self, seed: Optional[int] = None, **kwargs: Any) -> IncidentObservation:
@@ -69,6 +70,7 @@ class IncidentEnvironment(Environment):
         self._prev_wrong_remedies = 0
         self._prev_destructive = 0
         self._prev_escalations = 0
+        self._trajectory_reward_sum = 0.0
 
         self._state = IncidentState(
             episode_id=str(uuid4()),
@@ -114,15 +116,22 @@ class IncidentEnvironment(Environment):
         is_done = self._done or self._step_count >= self._scenario.max_steps
 
         if is_done:
-            reward = grade_episode(self._scenario, self._history)
+            # Convert final grade to a terminal delta reward so the episode return
+            # remains strictly below 1.0 even after incremental step rewards.
+            target_final_grade = grade_episode(self._scenario, self._history)
+            terminal_delta = target_final_grade - self._trajectory_reward_sum
+            reward = self._clamp_open_reward(terminal_delta)
+            remaining_budget = round(max(0.01, 0.99 - self._trajectory_reward_sum), 4)
+            reward = round(min(reward, remaining_budget), 4)
         else:
             reward = self._compute_step_reward()
 
         reward = self._clamp_open_reward(reward)
+        self._trajectory_reward_sum = round(self._trajectory_reward_sum + reward, 4)
 
         self._state.root_cause_identified = self._history.root_cause_correct
         self._state.incident_resolved = self._history.remedy_correct
-        self._state.cum_reward = (self._state.cum_reward or 0.0) + reward
+        self._state.cum_reward = self._trajectory_reward_sum
         self._state.relevant_clues_found = self._history.relevant_clues_found
         self._state.total_clues_available = self._scenario.total_clues
         self._state.steps_used = self._step_count

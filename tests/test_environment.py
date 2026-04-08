@@ -193,6 +193,53 @@ def test_environment_runtime_rewards_strict_open_interval():
     print("✅ test_environment_runtime_rewards_strict_open_interval passed")
 
 
+def test_episode_return_strict_open_interval():
+    """Test that cumulative episode return remains strictly in (0.0, 1.0)."""
+    env = IncidentEnvironment()
+    rewards = []
+
+    env.reset(task_name="easy_config_error")
+
+    obs = env.step(
+        IncidentAction(
+            action_type="query_logs",
+            target="payment-service",
+            parameters={"filter": "error"},
+        )
+    )
+    rewards.append(obs.reward)
+
+    obs = env.step(IncidentAction(action_type="check_metrics", target="payment-service", parameters={}))
+    rewards.append(obs.reward)
+
+    obs = env.step(IncidentAction(action_type="read_runbook", target="payment-service", parameters={}))
+    rewards.append(obs.reward)
+
+    obs = env.step(
+        IncidentAction(
+            action_type="identify_root_cause",
+            target="",
+            parameters={"cause": "misconfigured STRIPE_API_KEY environment variable"},
+        )
+    )
+    rewards.append(obs.reward)
+
+    obs = env.step(
+        IncidentAction(
+            action_type="execute_remedy",
+            target="",
+            parameters={"service": "payment-service", "remedy": "rollback_config"},
+        )
+    )
+    rewards.append(obs.reward)
+    assert obs.done, "Expected episode to finish after correct remedy"
+
+    total = round(sum(rewards), 4)
+    assert 0.0 < total < 1.0, f"Episode return {total} not in strict (0.0, 1.0)"
+
+    print("✅ test_episode_return_strict_open_interval passed")
+
+
 if __name__ == "__main__":
     print("\n🧪 Running Incident Response Environment Tests\n")
     test_list_tasks()
@@ -205,4 +252,5 @@ if __name__ == "__main__":
     test_grading_difficulty_range()
     test_score_range()
     test_environment_runtime_rewards_strict_open_interval()
+    test_episode_return_strict_open_interval()
     print("\n✅ All tests passed!\n")
