@@ -157,7 +157,7 @@ def clamp_reward(value: Optional[float]) -> float:
 
 
 def run_task(client: OpenAI, env_base_url: str, task_name: str) -> tuple:
-    """Run a single task. Returns (success, steps, rewards_list)."""
+    """Run a single task. Returns (success, steps, score, rewards_list)."""
 
     rewards: List[float] = []
     step_count = 0
@@ -271,7 +271,8 @@ def run_task(client: OpenAI, env_base_url: str, task_name: str) -> tuple:
             rewards.append(0.01)
             print(f"[STEP] step=1 action=noop() reward=0.01 done=false error={str(e)[:200]}")
 
-    return success, step_count, rewards
+    score = clamp_reward(sum(rewards) / len(rewards)) if rewards else 0.01
+    return success, step_count, score, rewards
 
 
 def main():
@@ -280,10 +281,10 @@ def main():
     tasks_to_run = [target_task] if target_task else TASKS
 
     for task in tasks_to_run:
-        success, steps, rewards = run_task(client, ENV_BASE_URL, task)
+        success, steps, score, rewards = run_task(client, ENV_BASE_URL, task)
         rewards_str = ",".join(f"{clamp_reward(r):.2f}" for r in rewards) if rewards else "0.01"
         success_str = "true" if success else "false"
-        print(f"[END] success={success_str} steps={steps} rewards={rewards_str}")
+        print(f"[END] success={success_str} steps={steps} score={score:.3f} rewards={rewards_str}")
 
 
 if __name__ == "__main__":
