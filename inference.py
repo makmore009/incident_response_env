@@ -7,11 +7,13 @@ hackathon evaluation pipeline.
 import json
 import os
 import re
-import sys
 import textwrap
 from typing import Dict, List, Optional
 
 from openai import OpenAI
+
+from client import IncidentEnv
+from models import IncidentAction
 
 # ── Configuration ──────────────────────────────────────────────────────────
 
@@ -143,9 +145,16 @@ def format_action_str(action: Dict) -> str:
     return f"{action_type}({','.join(parts)})"
 
 
+def clamp_reward(value: Optional[float]) -> float:
+    try:
+        numeric = float(value if value is not None else 0.01)
+    except (TypeError, ValueError):
+        numeric = 0.01
+    return round(max(0.01, min(0.99, numeric)), 2)
+
+
 def run_task(client: OpenAI, env_base_url: str, task_name: str) -> tuple:
-    """Run a single task via HTTP. Returns (success, steps, rewards_list)."""
-    import httpx
+    """Run a single task. Returns (success, steps, rewards_list)."""
 
     rewards: List[float] = []
     step_count = 0
@@ -154,112 +163,104 @@ def run_task(client: OpenAI, env_base_url: str, task_name: str) -> tuple:
     print(f"[START] task={task_name} env={ENV_NAME} model={MODEL_NAME}")
 
     try:
-        # Reset environment
-        reset_resp = httpx.post(
-            f"{env_base_url}/reset",
-            json={"task_name": task_name},
-            timeout=30.0,
-        )
-        reset_data = reset_resp.json()
-        obs = reset_data.get("observation", {})
-        alert = obs.get("alert_summary", "Incident alert fired")
-        services = obs.get("available_services", [])
+        with IncidentEnv(base_url=env_base_url).sync() as env:
+            # Reset environment
+            reset_result = env.reset(task_name=task_name)
+            obs = reset_result.observation
+            alert = obs.alert_summary or "Incident alert fired"
+            services = obs.available_services or []
 
-        system_prompt = get_system_prompt(task_name)
-        services_str = ", ".join(services) if services else ", ".join(TASK_CONTEXT.get(task_name, {}).get("services", []))
+            system_prompt = get_system_prompt(task_name)
+            services_str = ", ".join(services) if services else ", ".join(TASK_CONTEXT.get(task_name, {}).get("services", []))
 
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {
-                "role": "user",
-                "content": (
-                    f"ALERT: {alert}\n"
-                    f"Available services: {services_str}\n"
-                    f"Begin investigating. What is your first action?"
-                ),
-            },
-        ]
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {
+                    "role": "user",
+                    "content": (
+                        f"ALERT: {alert}\n"
+                        f"Available services: {services_str}\n"
+                        f"Begin investigating. What is your first action?"
+                    ),
+                },
+            ]
 
-        for step_idx in range(MAX_STEPS_PER_TASK):
-            step_count = step_idx + 1
-            action_str = "noop()"
-            reward = 0.01
-            done = False
-            error_str = "null"
+            for step_idx in range(MAX_STEPS_PER_TASK):
+                step_count = step_idx + 1
+                action_str = "noop()"
+                reward = 0.01
+                done = False
+                error_str = "null"
+                result_text = ""
 
-            try:
-                response = client.chat.completions.create(
-                    model=MODEL_NAME,
-                    messages=messages,
-                    temperature=TEMPERATURE,
-                    max_tokens=MAX_TOKENS,
-                )
-                llm_output = response.choices[0].message.content or ""
+                try:
+                    response = client.chat.completions.create(
+                        model=MODEL_NAME,
+                        messages=messages,
+                        temperature=TEMPERATURE,
+                        max_tokens=MAX_TOKENS,
+                    )
+                    llm_output = response.choices[0].message.content or ""
 
-                action = parse_action(llm_output)
-                if not action:
-                    action_str = "parse_error()"
-                    error_str = "Could not parse action from LLM output"
-                    messages.append({"role": "assistant", "content": llm_output})
-                    messages.append({
-                        "role": "user",
-                        "content": (
-                            'Respond with ONLY a JSON object. Example: '
-                            f'{{"action_type": "query_logs", "target": "{services[0] if services else "payment-service"}", "parameters": {{"filter": "error"}}}}'
-                        ),
-                    })
-                    rewards.append(reward)
-                    print(f"[STEP] step={step_count} action={action_str} reward={reward:.2f} done=false error={error_str}")
-                    continue
+                    action = parse_action(llm_output)
+                    if not action:
+                        action_str = "parse_error()"
+                        error_str = "Could not parse action from LLM output"
+                        messages.append({"role": "assistant", "content": llm_output})
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                'Respond with ONLY a JSON object. Example: '
+                                f'{{"action_type": "query_logs", "target": "{services[0] if services else "payment-service"}", "parameters": {{"filter": "error"}}}}'
+                            ),
+                        })
+                        rewards.append(reward)
+                        print(f"[STEP] step={step_count} action={action_str} reward={reward:.2f} done=false error={error_str}")
+                        continue
 
-                action_str = format_action_str(action)
+                    action_str = format_action_str(action)
 
-                # Send action to environment via HTTP
-                step_resp = httpx.post(
-                    f"{env_base_url}/step",
-                    json={
-                        "action": {
-                            "action_type": action.get("action_type", "noop"),
-                            "target": action.get("target", ""),
-                            "parameters": action.get("parameters", {}),
-                        }
-                    },
-                    timeout=30.0,
-                )
-                step_data = step_resp.json()
+                    step_result = env.step(
+                        IncidentAction(
+                            action_type=action.get("action_type", "noop"),
+                            target=action.get("target", ""),
+                            parameters=action.get("parameters", {}),
+                        )
+                    )
 
-                reward = step_data.get("reward", 0.01)
-                done = step_data.get("done", False)
-                step_obs = step_data.get("observation", {})
-                result_text = step_obs.get("last_action_result", "")
-                is_error = step_obs.get("last_action_error", False)
+                    reward = clamp_reward(step_result.reward)
+                    done = step_result.done
+                    step_obs = step_result.observation
+                    result_text = step_obs.last_action_result or ""
+                    is_error = bool(step_obs.last_action_error)
 
-                if is_error:
-                    error_str = result_text[:200]
-                else:
-                    error_str = "null"
+                    if is_error:
+                        error_str = result_text[:200]
+                    else:
+                        error_str = "null"
 
-                if "✅" in result_text and "resolved" in result_text.lower():
-                    success = True
-                elif "📞" in result_text and "escalated" in result_text.lower():
-                    pass  # done=True from env
+                    if "✅" in result_text and "resolved" in result_text.lower():
+                        success = True
+                    elif "📞" in result_text and "escalated" in result_text.lower():
+                        pass
 
-            except Exception as e:
-                error_str = str(e).replace("\n", " ")[:200]
+                except Exception as e:
+                    error_str = str(e).replace("\n", " ")[:200]
+                    reward = 0.01
 
-            rewards.append(reward)
-            done_str = "true" if done else "false"
-            print(f"[STEP] step={step_count} action={action_str} reward={reward:.2f} done={done_str} error={error_str}")
+                rewards.append(clamp_reward(reward))
+                done_str = "true" if done else "false"
+                print(f"[STEP] step={step_count} action={action_str} reward={clamp_reward(reward):.2f} done={done_str} error={error_str}")
 
-            if done:
-                break
+                if done:
+                    break
 
-            messages.append({"role": "assistant", "content": llm_output})
-            truncated = result_text[:1500] if len(result_text) > 1500 else result_text
-            messages.append({
-                "role": "user",
-                "content": f"Action result:\n{truncated}\n\nWhat is your next action? Respond with JSON only.",
-            })
+                messages.append({"role": "assistant", "content": llm_output})
+                truncated = result_text[:1500] if len(result_text) > 1500 else result_text
+                messages.append({
+                    "role": "user",
+                    "content": f"Action result:\n{truncated}\n\nWhat is your next action? Respond with JSON only.",
+                })
 
     except Exception as e:
         if step_count == 0:
@@ -275,7 +276,7 @@ def main():
 
     for task in TASKS:
         success, steps, rewards = run_task(client, ENV_BASE_URL, task)
-        rewards_str = ",".join(f"{r:.2f}" for r in rewards) if rewards else "0.01"
+        rewards_str = ",".join(f"{clamp_reward(r):.2f}" for r in rewards) if rewards else "0.01"
         success_str = "true" if success else "false"
         print(f"[END] success={success_str} steps={steps} rewards={rewards_str}")
 

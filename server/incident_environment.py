@@ -91,7 +91,7 @@ class IncidentEnvironment(Environment):
             step_number=0,
             max_steps=self._scenario.max_steps,
             done=False,
-            reward=0.0,
+            reward=0.01,
         )
 
     def step(self, action: IncidentAction) -> IncidentObservation:  # type: ignore[override]
@@ -100,7 +100,7 @@ class IncidentEnvironment(Environment):
                 last_action_result="Error: call reset() before step().",
                 last_action_error=True,
                 done=False,
-                reward=0.0,
+                reward=0.01,
             )
 
         self._step_count += 1
@@ -117,6 +117,8 @@ class IncidentEnvironment(Environment):
             reward = grade_episode(self._scenario, self._history)
         else:
             reward = self._compute_step_reward()
+
+        reward = self._clamp_open_reward(reward)
 
         self._state.root_cause_identified = self._history.root_cause_correct
         self._state.incident_resolved = self._history.remedy_correct
@@ -318,9 +320,13 @@ class IncidentEnvironment(Environment):
 
     # -- Incremental reward --
 
+    @staticmethod
+    def _clamp_open_reward(value: float) -> float:
+        return round(max(0.01, min(0.99, value)), 4)
+
     def _compute_step_reward(self) -> float:
         if not self._history:
-            return 0.0
+            return 0.01
 
         reward = 0.0
 
@@ -348,4 +354,4 @@ class IncidentEnvironment(Environment):
             reward -= 0.02 * new_escalations
             self._prev_escalations = self._history.unnecessary_escalations
 
-        return round(reward, 4)
+        return self._clamp_open_reward(reward)

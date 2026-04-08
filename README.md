@@ -60,7 +60,7 @@ After each action, the agent receives:
 
 ## Reward Function
 
-Scores are 0.0–1.0, composed of:
+Scores are strictly in (0.0, 1.0), composed of:
 
 | Component | Max Score | Description |
 |-----------|-----------|-------------|
@@ -101,18 +101,18 @@ docker build -t incident-env:latest -f server/Dockerfile .
 docker run -p 8000:8000 incident-env:latest
 ```
 
-## 🎮 Human Review & Interactive Testing
+## Human Review & API Testing
 
-This repository includes a fully featured **Interactive Dashboard** (built natively on top of the API without disrupting automated grading). The dashboard allows human engineers to assume the role of an on-call responder.
+This submission is configured in API-first mode for maximum reliability during automated evaluation.
 
-**To test the UI:**
-1. Navigate to the Hugging Face Space URL. The UI will automatically load by default.
-2. Select an incident (e.g., `easy_config_error`) and click **"🔔 Acknowledge & Start Investigation"**.
-3. Use the **Action Control** panel to investigate.
-    - Example 1: Set Action to `query_logs`, target to `payment-service`, and params to `{"filter": "error"}`, then click **Execute Action**.
-    - Example 2: Notice your score dynamically updates! Read the logs in the console to find the error.
-    - Example 3: Set Action to `read_runbook` for `payment-service` (params empty) to find the solution.
-4. Conclude the simulation by executing the correct `execute_remedy` action. The Grader rigorously enforces penalties for dangerous actions and rewards efficiency!
+To validate behavior manually, use the API endpoints:
+1. POST `/reset` with `{ "task_name": "easy_config_error" }`.
+2. POST `/step` with action payloads, for example:
+   - `query_logs` on `payment-service` with `{"filter": "error"}`.
+   - `read_runbook` on `payment-service`.
+   - `identify_root_cause` with cause text.
+   - `execute_remedy` with `{"service": "payment-service", "remedy": "rollback_config"}`.
+3. GET `/state` to inspect progress metadata.
 
 ### HuggingFace Space
 ```bash
@@ -140,7 +140,7 @@ incident_env/
     ├── app.py             # FastAPI server
     ├── incident_environment.py  # Core environment logic
     ├── scenarios.py       # 3 incident scenario definitions
-    ├── graders.py         # Scoring logic (0.0–1.0)
+    ├── graders.py         # Scoring logic in strict (0.0, 1.0)
     └── Dockerfile         # Container definition
 ```
 

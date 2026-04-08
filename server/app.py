@@ -40,6 +40,12 @@ async def root():
     }
 
 
+@app.get("/")
+async def index():
+    """Root endpoint with environment metadata."""
+    return await root()
+
+
 @app.get("/tasks")
 async def tasks():
     """Return available task names for this environment."""
@@ -57,19 +63,17 @@ async def healthz():
         return {"status": "error", "error": str(e)}
 
 
+@app.get("/health")
+async def health():
+    """Compatibility health endpoint used by container healthcheck."""
+    return await healthz()
+
+
 def main():
     import uvicorn
     port = int(os.environ.get("PORT", "8000"))
     uvicorn.run(app, host="0.0.0.0", port=port)
 
-
-import gradio as gr
-try:
-    from .ui import demo
-except ImportError:
-    from server.ui import demo
-
-app = gr.mount_gradio_app(app, demo, path="/")
 
 if __name__ == "__main__":
     main()

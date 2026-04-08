@@ -8,6 +8,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from server.scenarios import get_scenario, list_tasks, Scenario
 from server.graders import EpisodeHistory, grade_episode, check_root_cause, check_remedy
+from server.incident_environment import IncidentEnvironment
+from models import IncidentAction
 
 
 def test_list_tasks():
@@ -151,7 +153,7 @@ def test_grading_difficulty_range():
 
 
 def test_score_range():
-    """Test that all scores are in [0.0, 1.0] range."""
+    """Test that all scores are strictly in (0.0, 1.0)."""
     for task_name in list_tasks():
         scenario = get_scenario(task_name)
 
@@ -164,9 +166,31 @@ def test_score_range():
 
         for history in configs:
             score = grade_episode(scenario, history)
-            assert 0.0 <= score <= 1.0, f"Score {score} out of [0.0, 1.0] range"
+            assert 0.0 < score < 1.0, f"Score {score} out of strict (0.0, 1.0) range"
 
     print("✅ test_score_range passed")
+
+
+def test_environment_runtime_rewards_strict_open_interval():
+    """Test reset/step runtime rewards are strictly in (0.0, 1.0)."""
+    env = IncidentEnvironment()
+
+    obs = env.reset(task_name="easy_config_error")
+    assert 0.0 < obs.reward < 1.0, f"Reset reward {obs.reward} not in strict (0.0, 1.0)"
+
+    obs = env.step(IncidentAction(action_type="get_status", target="", parameters={}))
+    assert 0.0 < obs.reward < 1.0, f"Neutral step reward {obs.reward} not in strict (0.0, 1.0)"
+
+    obs = env.step(
+        IncidentAction(
+            action_type="execute_remedy",
+            target="",
+            parameters={"service": "payment-service", "remedy": "restart_service"},
+        )
+    )
+    assert 0.0 < obs.reward < 1.0, f"Penalty step reward {obs.reward} not in strict (0.0, 1.0)"
+
+    print("✅ test_environment_runtime_rewards_strict_open_interval passed")
 
 
 if __name__ == "__main__":
@@ -180,4 +204,5 @@ if __name__ == "__main__":
     test_grading_penalties()
     test_grading_difficulty_range()
     test_score_range()
+    test_environment_runtime_rewards_strict_open_interval()
     print("\n✅ All tests passed!\n")
