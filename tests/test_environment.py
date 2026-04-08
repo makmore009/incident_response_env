@@ -177,6 +177,7 @@ def test_environment_runtime_rewards_strict_open_interval():
 
     obs = env.reset(task_name="easy_config_error")
     assert 0.0 < obs.reward < 1.0, f"Reset reward {obs.reward} not in strict (0.0, 1.0)"
+    assert 0.0 < env.state.cum_reward < 1.0, f"Reset state.cum_reward {env.state.cum_reward} not in strict (0.0, 1.0)"
 
     obs = env.step(IncidentAction(action_type="get_status", target="", parameters={}))
     assert 0.0 < obs.reward < 1.0, f"Neutral step reward {obs.reward} not in strict (0.0, 1.0)"
@@ -288,6 +289,7 @@ def test_episode_aggregation_formulas_strict_open_interval():
     assert 0.0 < sum_with_reset < 1.0, f"sum_with_reset {sum_with_reset} out of (0,1)"
     assert 0.0 < mean_steps < 1.0, f"mean_steps {mean_steps} out of (0,1)"
     assert 0.0 < terminal_only < 1.0, f"terminal_only {terminal_only} out of (0,1)"
+    assert 0.0 < env.state.cum_reward < 1.0, f"final state.cum_reward {env.state.cum_reward} out of (0,1)"
 
     print("✅ test_episode_aggregation_formulas_strict_open_interval passed")
 

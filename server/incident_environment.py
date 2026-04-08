@@ -41,7 +41,7 @@ class IncidentEnvironment(Environment):
         "shutdown_service", "terminate_all",
     }
 
-    MIN_REWARD = 0.001
+    MIN_REWARD = 0.01
     MAX_REWARD = 0.98
 
     def __init__(self):
@@ -56,8 +56,12 @@ class IncidentEnvironment(Environment):
         self._prev_wrong_remedies: int = 0
         self._prev_destructive: int = 0
         self._prev_escalations: int = 0
-        self._trajectory_reward_sum: float = 0.0
-        self._state = IncidentState(episode_id=str(uuid4()), step_count=0)
+        self._trajectory_reward_sum: float = self.MIN_REWARD
+        self._state = IncidentState(
+            episode_id=str(uuid4()),
+            step_count=0,
+            cum_reward=self.MIN_REWARD,
+        )
 
     def reset(self, seed: Optional[int] = None, **kwargs: Any) -> IncidentObservation:
         task_name = kwargs.get("task_name", "easy_config_error")
@@ -73,7 +77,7 @@ class IncidentEnvironment(Environment):
         self._prev_wrong_remedies = 0
         self._prev_destructive = 0
         self._prev_escalations = 0
-        self._trajectory_reward_sum = 0.0
+        self._trajectory_reward_sum = self.MIN_REWARD
 
         self._state = IncidentState(
             episode_id=str(uuid4()),
@@ -81,6 +85,7 @@ class IncidentEnvironment(Environment):
             task_name=task_name,
             task_difficulty=self._scenario.task_difficulty,
             severity=self._scenario.severity,
+            cum_reward=self.MIN_REWARD,
         )
 
         return IncidentObservation(
