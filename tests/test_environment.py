@@ -1,5 +1,6 @@
 """Basic tests for the Incident Response Environment."""
 
+import json
 import sys
 import os
 
@@ -86,6 +87,9 @@ def test_grading_perfect_score():
         root_cause_correct=True,
         root_cause_partial=True,
         remedy_correct=True,
+        evidence_supported_root_cause=True,
+        verification_completed=True,
+        communication_updates=1,
         relevant_clues_found=3,
         steps_used=4,  # Very efficient
     )
@@ -136,6 +140,9 @@ def test_grading_difficulty_range():
             root_cause_correct=True,
             root_cause_partial=True,
             remedy_correct=True,
+            evidence_supported_root_cause=True,
+            verification_completed=True,
+            communication_updates=1,
             relevant_clues_found=scenario.total_clues,
             steps_used=max(1, scenario.max_steps // 3),
         )
@@ -294,6 +301,60 @@ def test_episode_aggregation_formulas_strict_open_interval():
     print("✅ test_episode_aggregation_formulas_strict_open_interval passed")
 
 
+def test_runtime_communication_and_noop_actions():
+    """Test new communication/noop actions and status accounting."""
+    env = IncidentEnvironment()
+    env.reset(task_name="easy_config_error")
+
+    obs = env.step(
+        IncidentAction(
+            action_type="communicate_status",
+            target="",
+            parameters={"message": "Investigating payment-service and collecting clues."},
+        )
+    )
+    assert not obs.last_action_error, "communicate_status should be accepted"
+    assert "Status update sent" in obs.last_action_result
+
+    obs = env.step(IncidentAction(action_type="noop", target="", parameters={}))
+    assert not obs.last_action_error, "noop should be accepted"
+
+    status_obs = env.step(IncidentAction(action_type="get_status", target="", parameters={}))
+    status = json.loads(status_obs.last_action_result)
+    assert status["communication_updates"] >= 1
+
+    print("✅ test_runtime_communication_and_noop_actions passed")
+
+
+def test_runtime_verification_signal_after_correct_remedy():
+    """Test that verification_completed is tracked for successful incidents."""
+    env = IncidentEnvironment()
+    env.reset(task_name="easy_config_error")
+
+    env.step(IncidentAction(action_type="query_logs", target="payment-service", parameters={"filter": "error"}))
+    env.step(IncidentAction(action_type="check_metrics", target="payment-service", parameters={}))
+    env.step(IncidentAction(action_type="get_status", target="", parameters={}))
+    env.step(
+        IncidentAction(
+            action_type="identify_root_cause",
+            target="",
+            parameters={"cause": "misconfigured STRIPE_API_KEY environment variable"},
+        )
+    )
+    final_obs = env.step(
+        IncidentAction(
+            action_type="execute_remedy",
+            target="",
+            parameters={"service": "payment-service", "remedy": "rollback_config"},
+        )
+    )
+
+    assert final_obs.done, "Episode should complete after correct remedy"
+    assert env._history.verification_completed is True, "verification_completed should be true after post-fix checks"
+
+    print("✅ test_runtime_verification_signal_after_correct_remedy passed")
+
+
 if __name__ == "__main__":
     print("\n🧪 Running Incident Response Environment Tests\n")
     test_list_tasks()
@@ -308,4 +369,6 @@ if __name__ == "__main__":
     test_environment_runtime_rewards_strict_open_interval()
     test_episode_return_strict_open_interval()
     test_episode_aggregation_formulas_strict_open_interval()
+    test_runtime_communication_and_noop_actions()
+    test_runtime_verification_signal_after_correct_remedy()
     print("\n✅ All tests passed!\n")

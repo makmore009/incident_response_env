@@ -11,7 +11,7 @@ class IncidentAction(Action):
 
     action_type: str = Field(
         ...,
-        description="One of: query_logs, check_metrics, read_runbook, identify_root_cause, execute_remedy, escalate, noop",
+        description="One of: query_logs, check_metrics, read_runbook, identify_root_cause, execute_remedy, escalate, get_status, communicate_status, noop",
     )
     target: str = Field(default="", description="Target service or component")
     parameters: Dict[str, str] = Field(default_factory=dict, description="Action-specific parameters")

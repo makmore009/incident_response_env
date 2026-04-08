@@ -33,13 +33,15 @@ class IncidentEnvironment(Environment):
     VALID_ACTIONS = [
         "query_logs", "check_metrics", "read_runbook",
         "identify_root_cause", "execute_remedy", "escalate",
-        "get_status",
+        "get_status", "communicate_status", "noop",
     ]
 
     DESTRUCTIVE_ACTIONS = {
         "drop_database", "delete_data", "format_disk",
         "shutdown_service", "terminate_all",
     }
+
+    RISKY_REMEDY_KEYWORDS = {"restart", "kill", "scale", "flush", "force"}
 
     MIN_REWARD = 0.01
     MAX_REWARD = 0.95
@@ -190,7 +192,13 @@ class IncidentEnvironment(Environment):
             return self._handle_escalate(reason), False
         elif action_type == "get_status":
             return self._handle_get_status(), False
+        elif action_type == "communicate_status":
+            message = params.get("message", target)
+            return self._handle_communicate_status(message), False
+        elif action_type == "noop":
+            return self._handle_noop(), False
         else:
+            self._history.invalid_actions += 1
             return f"Unknown action '{action_type}'. Valid: {', '.join(self.VALID_ACTIONS)}", True
 
     # -- Tool handlers --
@@ -290,6 +298,12 @@ class IncidentEnvironment(Environment):
         self._history.root_cause_correct = exact
         self._history.root_cause_partial = partial
 
+        # Evidence quality: root-cause claims are stronger when backed by both logs and
+        # metrics from relevant services.
+        relevant_seen_in_logs = len(self._history.services_queried_logs.intersection(self._scenario.relevant_services)) > 0
+        relevant_seen_in_metrics = len(self._history.services_queried_metrics.intersection(self._scenario.relevant_services)) > 0
+        self._history.evidence_supported_root_cause = (relevant_seen_in_logs and relevant_seen_in_metrics and (exact or partial))
+
         if exact:
             return "✅ Root cause correctly identified! Now apply the appropriate remedy."
         elif partial:
@@ -306,8 +320,21 @@ class IncidentEnvironment(Environment):
             return f"⛔ DESTRUCTIVE ACTION BLOCKED: '{remedy}' on {service}. Penalty applied."
 
         is_correct = check_remedy([attempt], self._scenario)
+
+        # Risk-aware mechanic: broad/risky remediations before identifying root-cause
+        # are penalized even if they may accidentally work.
+        if not self._history.root_cause_correct:
+            if any(k in attempt["remedy"] for k in self.RISKY_REMEDY_KEYWORDS):
+                self._history.risky_actions += 1
+
         if is_correct:
             self._history.remedy_correct = True
+            valid_services = {v["service"].lower().strip() for v in self._scenario.valid_remedies}
+            has_post_fix_signal = (
+                len(self._history.services_queried_metrics.intersection(valid_services)) > 0
+                or self._history.status_checks > 0
+            )
+            self._history.verification_completed = has_post_fix_signal
             self._done = True
             return f"✅ Remedy '{remedy}' applied to {service}. Incident resolved!"
         else:
@@ -320,6 +347,7 @@ class IncidentEnvironment(Environment):
         return f"📞 Escalated to senior on-call. Reason: {reason}. Resolving without escalation earns higher scores."
 
     def _handle_get_status(self) -> str:
+        self._history.status_checks += 1
         status = {
             "alert": self._scenario.alert_summary,
             "severity": self._scenario.severity,
@@ -332,8 +360,21 @@ class IncidentEnvironment(Environment):
             "root_cause_declared": self._history.root_cause_declared is not None,
             "incident_resolved": self._history.remedy_correct,
             "available_services": list(self._scenario.services.keys()),
+            "communication_updates": self._history.communication_updates,
+            "verification_completed": self._history.verification_completed,
         }
         return json.dumps(status, indent=2)
+
+    def _handle_communicate_status(self, message: str) -> str:
+        clean_message = (message or "").strip()
+        self._history.communication_updates += 1
+        if not clean_message:
+            return "📣 Status update sent: Investigating incident and collecting evidence."
+        return f"📣 Status update sent: {clean_message[:200]}"
+
+    def _handle_noop(self) -> str:
+        self._history.noop_count += 1
+        return "No-op recorded. Continue investigating to improve score."
 
     # -- Incremental reward --
 
@@ -370,5 +411,8 @@ class IncidentEnvironment(Environment):
         if new_escalations > 0:
             reward -= 0.02 * new_escalations
             self._prev_escalations = self._history.unnecessary_escalations
+
+        if self._history.noop_count > 0:
+            reward -= 0.01
 
         return self._clamp_open_reward(reward)

@@ -35,7 +35,7 @@ This is a **multi-step sequential decision problem** — perfect for training RL
 
 ## Action Space
 
-The agent interacts via 7 tools:
+The agent interacts via 9 tools:
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
@@ -46,6 +46,8 @@ The agent interacts via 7 tools:
 | `execute_remedy` | `service`, `remedy` | Apply a remediation action |
 | `escalate` | `reason` | Escalate to senior on-call (penalty) |
 | `get_status` | — | Get current investigation summary |
+| `communicate_status` | `message` | Send a concise stakeholder update |
+| `noop` | — | Explicit no-op (tracked and penalized) |
 
 ## Observation Space
 
@@ -64,14 +66,20 @@ Scores are strictly in (0.0, 1.0), composed of:
 
 | Component | Max Score | Description |
 |-----------|-----------|-------------|
-| Root cause identification | 0.30 | Correct (0.30) or partial (0.10) |
-| Correct remedy | 0.35 | Applied the right fix from the runbook |
-| Efficiency | 0.15 | Fewer steps = higher score |
-| Clue discovery | 0.20 | Proportion of relevant evidence found |
+| Root cause identification | 0.25 | Correct diagnosis |
+| Partial diagnosis | 0.08 | Incomplete but directionally correct |
+| Evidence-supported diagnosis | 0.08 | Root-cause claim backed by logs + metrics |
+| Correct remedy | 0.28 | Applied the right fix from the runbook |
+| Post-fix verification | 0.05 | Confirmed after mitigation |
+| Communication discipline | 0.04 | Best score for exactly one concise update |
+| Efficiency | 0.12 | Faster resolution with fewer steps |
+| Clue discovery | 0.18 | Proportion of relevant evidence found |
 | **Penalties** | | |
 | Wrong remedy | -0.15 | Per incorrect remedy attempt |
 | Destructive action | -0.30 | Blocked dangerous operations |
 | Unnecessary escalation | -0.10 | Should have resolved independently |
+| Risky pre-diagnosis action | -0.05 | Broad/high-risk mitigation before diagnosis |
+| No-op | -0.02 | Per no-op action |
 
 ## Setup
 
@@ -104,6 +112,8 @@ docker run -p 8000:8000 incident-env:latest
 ## Human Review & API Testing
 
 This submission is configured in API-first mode for maximum reliability during automated evaluation.
+
+Reviewer UI is also available at GET `/ui` for quick manual testing of reset/step/state flows.
 
 To validate behavior manually, use the API endpoints:
 1. POST `/reset` with `{ "task_name": "easy_config_error" }`.
