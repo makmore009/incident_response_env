@@ -153,7 +153,7 @@ def clamp_reward(value: Optional[float]) -> float:
         numeric = 0.01
     if not math.isfinite(numeric):
         numeric = 0.01
-    return round(max(0.01, min(0.99, numeric)), 2)
+    return round(max(0.01, min(0.95, numeric)), 2)
 
 
 def run_task(client: OpenAI, env_base_url: str, task_name: str) -> tuple:

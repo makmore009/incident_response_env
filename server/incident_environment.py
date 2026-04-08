@@ -42,7 +42,7 @@ class IncidentEnvironment(Environment):
     }
 
     MIN_REWARD = 0.01
-    MAX_REWARD = 0.98
+    MAX_REWARD = 0.95
 
     def __init__(self):
         self._scenario: Optional[Scenario] = None
