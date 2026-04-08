@@ -41,6 +41,9 @@ class IncidentEnvironment(Environment):
         "shutdown_service", "terminate_all",
     }
 
+    MIN_REWARD = 0.001
+    MAX_REWARD = 0.98
+
     def __init__(self):
         self._scenario: Optional[Scenario] = None
         self._history: Optional[EpisodeHistory] = None
@@ -93,7 +96,7 @@ class IncidentEnvironment(Environment):
             step_number=0,
             max_steps=self._scenario.max_steps,
             done=False,
-            reward=0.01,
+            reward=self.MIN_REWARD,
         )
 
     def step(self, action: IncidentAction) -> IncidentObservation:  # type: ignore[override]
@@ -102,7 +105,7 @@ class IncidentEnvironment(Environment):
                 last_action_result="Error: call reset() before step().",
                 last_action_error=True,
                 done=False,
-                reward=0.01,
+                reward=self.MIN_REWARD,
             )
 
         self._step_count += 1
@@ -121,7 +124,7 @@ class IncidentEnvironment(Environment):
             target_final_grade = grade_episode(self._scenario, self._history)
             terminal_delta = target_final_grade - self._trajectory_reward_sum
             reward = self._clamp_open_reward(terminal_delta)
-            remaining_budget = round(max(0.01, 0.99 - self._trajectory_reward_sum), 4)
+            remaining_budget = round(max(self.MIN_REWARD, self.MAX_REWARD - self._trajectory_reward_sum), 4)
             reward = round(min(reward, remaining_budget), 4)
         else:
             reward = self._compute_step_reward()
@@ -331,11 +334,11 @@ class IncidentEnvironment(Environment):
 
     @staticmethod
     def _clamp_open_reward(value: float) -> float:
-        return round(max(0.01, min(0.99, value)), 4)
+        return round(max(IncidentEnvironment.MIN_REWARD, min(IncidentEnvironment.MAX_REWARD, value)), 4)
 
     def _compute_step_reward(self) -> float:
         if not self._history:
-            return 0.01
+            return self.MIN_REWARD
 
         reward = 0.0
 

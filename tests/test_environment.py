@@ -240,6 +240,58 @@ def test_episode_return_strict_open_interval():
     print("✅ test_episode_return_strict_open_interval passed")
 
 
+def test_episode_aggregation_formulas_strict_open_interval():
+    """Test multiple plausible evaluator aggregations remain strictly in (0.0, 1.0)."""
+    env = IncidentEnvironment()
+    reset_obs = env.reset(task_name="easy_config_error")
+    reset_reward = reset_obs.reward
+
+    rewards = []
+
+    rewards.append(
+        env.step(
+            IncidentAction(
+                action_type="query_logs",
+                target="payment-service",
+                parameters={"filter": "error"},
+            )
+        ).reward
+    )
+    rewards.append(env.step(IncidentAction(action_type="check_metrics", target="payment-service", parameters={})).reward)
+    rewards.append(env.step(IncidentAction(action_type="read_runbook", target="payment-service", parameters={})).reward)
+    rewards.append(
+        env.step(
+            IncidentAction(
+                action_type="identify_root_cause",
+                target="",
+                parameters={"cause": "misconfigured STRIPE_API_KEY environment variable"},
+            )
+        ).reward
+    )
+    final_obs = env.step(
+        IncidentAction(
+            action_type="execute_remedy",
+            target="",
+            parameters={"service": "payment-service", "remedy": "rollback_config"},
+        )
+    )
+    rewards.append(final_obs.reward)
+
+    assert final_obs.done, "Expected episode to be done after valid remedy"
+
+    sum_steps = round(sum(rewards), 4)
+    sum_with_reset = round(reset_reward + sum_steps, 4)
+    mean_steps = round(sum_steps / len(rewards), 4)
+    terminal_only = round(final_obs.reward, 4)
+
+    assert 0.0 < sum_steps < 1.0, f"sum_steps {sum_steps} out of (0,1)"
+    assert 0.0 < sum_with_reset < 1.0, f"sum_with_reset {sum_with_reset} out of (0,1)"
+    assert 0.0 < mean_steps < 1.0, f"mean_steps {mean_steps} out of (0,1)"
+    assert 0.0 < terminal_only < 1.0, f"terminal_only {terminal_only} out of (0,1)"
+
+    print("✅ test_episode_aggregation_formulas_strict_open_interval passed")
+
+
 if __name__ == "__main__":
     print("\n🧪 Running Incident Response Environment Tests\n")
     test_list_tasks()
@@ -253,4 +305,5 @@ if __name__ == "__main__":
     test_score_range()
     test_environment_runtime_rewards_strict_open_interval()
     test_episode_return_strict_open_interval()
+    test_episode_aggregation_formulas_strict_open_interval()
     print("\n✅ All tests passed!\n")

@@ -5,6 +5,7 @@ hackathon evaluation pipeline.
 """
 
 import json
+import math
 import os
 import re
 import textwrap
@@ -150,6 +151,8 @@ def clamp_reward(value: Optional[float]) -> float:
         numeric = float(value if value is not None else 0.01)
     except (TypeError, ValueError):
         numeric = 0.01
+    if not math.isfinite(numeric):
+        numeric = 0.01
     return round(max(0.01, min(0.99, numeric)), 2)
 
 
@@ -273,8 +276,10 @@ def run_task(client: OpenAI, env_base_url: str, task_name: str) -> tuple:
 
 def main():
     client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
+    target_task = os.getenv("TASK_NAME")
+    tasks_to_run = [target_task] if target_task else TASKS
 
-    for task in TASKS:
+    for task in tasks_to_run:
         success, steps, rewards = run_task(client, ENV_BASE_URL, task)
         rewards_str = ",".join(f"{clamp_reward(r):.2f}" for r in rewards) if rewards else "0.01"
         success_str = "true" if success else "false"
